@@ -1,0 +1,3 @@
+- insert:
+    - id: pdx-forge
+      name: '@local/pdx-forge'

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="PDX Forge">
+  <defs>
+    <linearGradient id="pf-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f3b52"/>
+      <stop offset="1" stop-color="#1d2534"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#pf-bg)"/>
+  <path d="M17 15h26a4 4 0 0 1 4 4v26a4 4 0 0 1-4 4H21a4 4 0 0 1-4-4V15z" fill="#f1e6cf"/>
+  <path d="M21 15h6v34h-6a4 4 0 0 1-4-4V19a4 4 0 0 1 4-4z" fill="#d9c8a6"/>
+  <g stroke="#33405a" stroke-width="3" stroke-linecap="round">
+    <line x1="28" y1="25" x2="42" y2="25"/>
+    <line x1="28" y1="32" x2="42" y2="32"/>
+    <line x1="28" y1="39" x2="36" y2="39"/>
+  </g>
+  <g transform="translate(44 44)">
+    <circle r="9.5" fill="#f0a020"/>
+    <g fill="#f0a020">
+      <rect x="-2" y="-13" width="4" height="5" rx="1"/>
+      <rect x="-2" y="8" width="4" height="5" rx="1"/>
+      <rect x="-13" y="-2" width="5" height="4" rx="1"/>
+      <rect x="8" y="-2" width="5" height="4" rx="1"/>
+      <rect x="-10" y="-10" width="4" height="5" rx="1" transform="rotate(-45)"/>
+      <rect x="6" y="5" width="4" height="5" rx="1" transform="rotate(-45)"/>
+      <rect x="-10" y="5" width="4" height="5" rx="1" transform="rotate(45)"/>
+      <rect x="6" y="-10" width="4" height="5" rx="1" transform="rotate(45)"/>
+    </g>
+    <circle r="4.5" fill="#2f3b52"/>
+  </g>
+</svg>
