@@ -154,9 +154,25 @@ node tools/check-labels.mjs   # 修正/革新名的占位符解析结果
 node tools/host-test.mjs      # 扫描器：分类、中文名、搜索、耗时
 node tools/route-test.mjs     # Host 接口：数据 / 扫描 / 条目 / 取块 / AI 错误路径 / 写入、追加、块替换、BOM、越界
 node tools/edit-test.mjs      # 取块、括号匹配（含注释与字符串）、块替换、越界拒绝
+node tools/edit-fields-test.mjs # 结构化编辑：解析→原样重建一致、改字段只动那一处、注释保留
 node tools/dialog-probe.mjs   # 真开一次系统文件对话框并在 3 秒后取消
 node tools/render-smoke.mjs   # 用 React shim 渲染五种表单、加载/预留分支与写入目标路由
 ```
+
+## 宣传素材
+
+`docs/promo/` 放了一套可以直接用的投稿素材：
+
+| 文件 | 用途 |
+|---|---|
+| `cover.png` | B 站封面（1920×1080，16:9） |
+| `card_title.png` / `card_outro.png` | 片头 / 片尾卡 |
+| `chapters/ch1~5.png` | 五个功能的章节过渡卡 |
+| `01_分镜与口播.md` | 24 段分镜表 + 完整逐字稿 + 剪辑建议 |
+| `02_字幕.srt` | 22 条字幕，剪映 / PR 可直接导入 |
+| `03_投稿信息.md` | 标题备选、分区、标签、简介、置顶评论 |
+| `04_录制清单.md` | 开录前检查、录像参数、逐段拍摄步骤 |
+| `make_cards.py` | 卡片生成脚本（Pillow + 微软雅黑），改文案后重跑即可 |
 
 改完 `client.js` 或 `index.js` 需要**重启桌面应用**（Host 端只在启动时加载）；只改样式的话刷新页面即可。
 
