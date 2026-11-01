@@ -88,6 +88,14 @@ window.__ModuleLoader__.load({
         'edit.locOverride': '写入覆盖',
         'edit.locNew': '新建',
         'edit.locHint': '改过的文本会写回原来的本地化文件；原版文本或缺失的键会在当前 MOD 里新建覆盖条目。',
+        'edit.data': '数据',
+        'edit.advanced': '高级 · 原始脚本',
+        'edit.ai': 'AI 完善',
+        'edit.aiInstruction': '按这个条目的名称与描述补全或改写这一段内容',
+        'edit.parseFail': '这个条目结构太特殊，已切换到原始脚本模式编辑。',
+        'edit.policy': '政策',
+        'edit.optionBody': '选项内容（name 与效果）',
+        'edit.locCategory': '分类键',
         'src.all': '来源：全部',
         'src.tab': '数据源',
         'src.title': '数据源',
@@ -247,6 +255,14 @@ window.__ModuleLoader__.load({
         'edit.locOverride': 'override',
         'edit.locNew': 'new',
         'edit.locHint': 'Changed text is written back to its localisation file; vanilla or missing keys get an override entry in the current mod.',
+        'edit.data': 'Data',
+        'edit.advanced': 'Advanced · raw script',
+        'edit.ai': 'AI fill',
+        'edit.aiInstruction': 'Complete or rewrite this part using the entry name and description',
+        'edit.parseFail': 'This definition has an unusual shape, so the raw script editor was used instead.',
+        'edit.policy': 'Policy',
+        'edit.optionBody': 'Option body (name and effects)',
+        'edit.locCategory': 'Category key',
         'src.all': 'Source: all',
         'src.tab': 'Sources',
         'src.title': 'Data sources',
@@ -1324,23 +1340,355 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /* ------------------------------------------- 已有条目：解析与按字段重建 */
+    const EDIT_INDENT = '\t'
+
+    /**
+     * Split `id = { ... }` into head, top-level entries and tail. Raw text
+     * between entries (comments, blank lines) is kept so a rebuild never drops
+     * the author's annotations.
+     */
+    function parseDefinition(text) {
+      const open = text.indexOf('{')
+      if (open < 0 || open === text.length - 1) return null
+      const segments = []
+      let raw = ''
+      let depth = 0
+      let i = open + 1
+      const flush = () => { if (raw) { segments.push({ type: 'raw', text: raw }); raw = '' } }
+      while (i < text.length) {
+        const ch = text[i]
+        if (ch === '#') {
+          const nl = text.indexOf('\n', i)
+          const end = nl < 0 ? text.length : nl
+          raw += text.slice(i, end)
+          i = end
+          continue
+        }
+        if (ch === '"') {
+          const start = i
+          i += 1
+          while (i < text.length) {
+            if (text[i] === '\\') i += 2
+            else if (text[i] === '"') { i += 1; break }
+            else i += 1
+          }
+          raw += text.slice(start, i)
+          continue
+        }
+        if (ch === '{') { depth += 1; raw += ch; i += 1; continue }
+        if (ch === '}') {
+          if (depth === 0) { flush(); return { head: text.slice(0, open + 1), segments, tail: text.slice(i) } }
+          depth -= 1
+          raw += ch
+          i += 1
+          continue
+        }
+        if (depth === 0) {
+          const match = /^([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*/.exec(text.slice(i, i + 200))
+          if (match) {
+            flush()
+            const key = match[1]
+            const valueAt = i + match[0].length
+            if (text[valueAt] === '{') {
+              let j = valueAt
+              let d = 0
+              while (j < text.length) {
+                const c = text[j]
+                if (c === '#') { const nl = text.indexOf('\n', j); j = nl < 0 ? text.length : nl; continue }
+                if (c === '"') {
+                  j += 1
+                  while (j < text.length) {
+                    if (text[j] === '\\') j += 2
+                    else if (text[j] === '"') { j += 1; break }
+                    else j += 1
+                  }
+                  continue
+                }
+                if (c === '{') d += 1
+                else if (c === '}') { d -= 1; if (d === 0) { j += 1; break } }
+                j += 1
+              }
+              segments.push({ type: 'entry', key, kind: 'block', value: text.slice(valueAt + 1, j - 1), raw: text.slice(i, j) })
+              i = j
+              continue
+            }
+            let j = valueAt
+            while (j < text.length && text[j] !== '\n') j += 1
+            const rawValue = text.slice(valueAt, j)
+            let cut = -1
+            let quoted = false
+            for (let k = 0; k < rawValue.length; k += 1) {
+              const c = rawValue[k]
+              if (c === '"') quoted = !quoted
+              else if (c === '#' && !quoted) { cut = k; break }
+            }
+            const value = (cut >= 0 ? rawValue.slice(0, cut) : rawValue).trim()
+            const comment = cut >= 0 ? rawValue.slice(cut).trim() : ''
+            segments.push({ type: 'entry', key, kind: 'scalar', value, comment, raw: text.slice(i, j) })
+            i = j
+            continue
+          }
+        }
+        raw += ch
+        i += 1
+      }
+      return null
+    }
+
+    /**
+     * Rebuild one parsed body. Buckets missing from `texts` keep their original
+     * text untouched, so only edited fields are rewritten.
+     */
+    function rebuildParsed(parsed, bucketOf, texts, indent) {
+      const out = []
+      const used = new Set()
+      for (const seg of parsed.segments) {
+        if (seg.type === 'raw') { out.push(seg.text); continue }
+        const bucket = bucketOf(seg)
+        if (!bucket || !(bucket in texts)) { out.push(seg.raw); continue }
+        if (used.has(bucket)) continue
+        used.add(bucket)
+        if (texts[bucket]) out.push(texts[bucket])
+      }
+      for (const [bucket, text] of Object.entries(texts)) {
+        if (!used.has(bucket) && text) out.push('\n' + indent + text)
+      }
+      return parsed.head + out.join('') + parsed.tail
+    }
+
+    function rebuildInner(innerText, bucketOf, texts, indent) {
+      const parsed = parseDefinition(`w = {${innerText}}`)
+      if (!parsed) return innerText
+      const rebuilt = rebuildParsed(parsed, bucketOf, texts, indent)
+      return rebuilt.slice(rebuilt.indexOf('{') + 1, rebuilt.lastIndexOf('}'))
+    }
+
+    const asEntry = (key, value) => `${key} = ${value}`
+    const asBlock = (key, inner, indent) => `${key} = {\n${withTabs(inner, 1)}\n${indent}}`
+    const modsOfBlock = (seg, idx) => {
+      if (!seg || seg.kind !== 'block') return []
+      const inner = parseDefinition(`w = {${seg.value}}`)
+      if (!inner) return []
+      return inner.segments
+        .filter((item) => item.type === 'entry' && item.kind === 'scalar' && idx.modByKey.has(item.key))
+        .map((item) => ({ key: item.key, value: item.value, comment: item.comment || '' }))
+    }
+
+    /** Modifier lines, keeping the author's inline annotation for that key. */
+    function renderModLines(mods, previous, idx) {
+      return (mods || [])
+        .filter((m) => nz(m.key))
+        .map((m) => {
+          const prev = (previous || []).find((item) => item.key === m.key)
+          const comment = prev && prev.comment ? '  ' + prev.comment : ''
+          return `${m.key} = ${modValue(m, m.value, idx)}${comment}`
+        })
+    }
+
+    /** Read the fields the structured editor exposes, per content type. */
+    function readFields(type, text, idx) {
+      const parsed = parseDefinition(text)
+      if (!parsed) return null
+      const entries = parsed.segments.filter((seg) => seg.type === 'entry')
+      const find = (key) => entries.find((seg) => seg.key === key)
+      const innerOf = (key) => {
+        const seg = find(key)
+        return seg && seg.kind === 'block' ? seg.value.trim() : ''
+      }
+      const fields = {}
+      if (type === 'advance') {
+        fields.age = (find('age') || {}).value || ''
+        fields.icon = (find('icon') || {}).value || ''
+        fields.potential = innerOf('potential')
+        fields.requires = entries.filter((seg) => seg.key === 'requires').map((seg) => seg.value)
+        fields.unlocks = entries.filter((seg) => seg.key.startsWith('unlock_')).map((seg) => ({ kind: seg.key, target: seg.value }))
+        fields.mods = entries.filter((seg) => seg.kind === 'scalar' && idx.modByKey.has(seg.key)).map((seg) => ({ key: seg.key, value: seg.value, comment: seg.comment || '' }))
+      } else if (type === 'decision') {
+        fields.decision_category = (find('decision_category') || {}).value || ''
+        fields.potential = innerOf('potential')
+        fields.allow = innerOf('allow')
+        const option = find('option')
+        let effect = ''
+        if (option && option.kind === 'block') {
+          const inner = parseDefinition(`w = {${option.value}}`)
+          const eff = inner && inner.segments.find((seg) => seg.type === 'entry' && seg.key === 'effect')
+          effect = eff && eff.kind === 'block' ? eff.value.trim() : ''
+        }
+        fields.effect = effect
+      } else if (type === 'event') {
+        fields.type = (find('type') || {}).value || ''
+        fields.trigger = innerOf('trigger')
+        const option = find('option')
+        fields.option = option && option.kind === 'block' ? option.value.trim() : ''
+      } else if (type === 'privilege') {
+        fields.estate = (find('estate') || {}).value || ''
+        fields.potential = innerOf('potential')
+        fields.allow = innerOf('allow')
+        fields.mods = modsOfBlock(find('country_modifier'), idx)
+      } else if (type === 'law') {
+        fields.law_category = (find('law_category') || {}).value || ''
+        fields.potential = innerOf('potential')
+        fields.allow = innerOf('allow')
+        fields.policies = entries
+          .filter((seg) => seg.kind === 'block' && !['potential', 'allow'].includes(seg.key))
+          .map((seg) => {
+            const inner = parseDefinition(`w = {${seg.value}}`)
+            const cm = inner && inner.segments.find((item) => item.type === 'entry' && item.key === 'country_modifier')
+            return { id: seg.key, mods: cm ? modsOfBlock(cm, idx) : [] }
+          })
+      }
+      return fields
+    }
+
+    /** Build the replacement texts for the fields that actually changed. */
+    function writeFields(type, fields, original, idx) {
+      const indent = EDIT_INDENT
+      const texts = {}
+      const dirty = (key) => JSON.stringify(fields[key]) !== JSON.stringify(original[key])
+      const modsText = (mods) => renderModLines(mods, original ? original.mods : [], idx).join('\n' + indent)
+      const listText = (list, render) => list.map(render).join('\n' + indent)
+
+      if (type === 'advance') {
+        if (dirty('age')) texts.age = fields.age ? asEntry('age', fields.age) : ''
+        if (dirty('icon')) texts.icon = nz(fields.icon) ? asEntry('icon', nz(fields.icon)) : ''
+        if (dirty('potential')) texts.potential = nz(fields.potential) ? asBlock('potential', fields.potential, indent) : ''
+        if (dirty('requires')) texts.requires = listText((fields.requires || []).filter(nz), (r) => asEntry('requires', nz(r)))
+        if (dirty('unlocks')) texts.unlocks = listText((fields.unlocks || []).filter((u) => u.kind && nz(u.target)), (u) => asEntry(u.kind, nz(u.target)))
+        if (dirty('mods')) texts.mods = modsText(fields.mods)
+      } else if (type === 'decision') {
+        if (dirty('decision_category')) texts.decision_category = fields.decision_category ? asEntry('decision_category', fields.decision_category) : ''
+        if (dirty('potential')) texts.potential = nz(fields.potential) ? asBlock('potential', fields.potential, indent) : ''
+        if (dirty('allow')) texts.allow = nz(fields.allow) ? asBlock('allow', fields.allow, indent) : ''
+        if (dirty('effect')) texts.option = '__EFFECT__'
+      } else if (type === 'event') {
+        if (dirty('type')) texts.type = fields.type ? asEntry('type', fields.type) : ''
+        if (dirty('trigger')) texts.trigger = nz(fields.trigger) ? asBlock('trigger', fields.trigger, indent) : ''
+        if (dirty('option')) texts.option = asBlock('option', fields.option, indent)
+      } else if (type === 'privilege') {
+        if (dirty('estate')) texts.estate = fields.estate ? asEntry('estate', fields.estate) : ''
+        if (dirty('potential')) texts.potential = nz(fields.potential) ? asBlock('potential', fields.potential, indent) : ''
+        if (dirty('allow')) texts.allow = nz(fields.allow) ? asBlock('allow', fields.allow, indent) : ''
+        if (dirty('mods')) texts.mods = renderModLines(fields.mods, original.mods, idx).length ? asBlock('country_modifier', modsText(fields.mods), indent) : ''
+      } else if (type === 'law') {
+        if (dirty('law_category')) texts.law_category = fields.law_category ? asEntry('law_category', fields.law_category) : ''
+        if (dirty('potential')) texts.potential = nz(fields.potential) ? asBlock('potential', fields.potential, indent) : ''
+        if (dirty('allow')) texts.allow = nz(fields.allow) ? asBlock('allow', fields.allow, indent) : ''
+        const before = new Map((original.policies || []).map((p) => [p.id, p]))
+        for (const policy of fields.policies || []) {
+          const prev = before.get(policy.id)
+          if (!prev || JSON.stringify(prev.mods) !== JSON.stringify(policy.mods)) texts[`policy:${policy.id}`] = policy.id
+        }
+      }
+      return texts
+    }
+
+    /** bucket mapping used when rebuilding a definition of one content type. */
+    function bucketOfType(type, seg, idx) {
+      if (seg.type !== 'entry') return null
+      if (type === 'advance') {
+        if (['age', 'icon', 'potential'].includes(seg.key)) return seg.key
+        if (seg.key === 'requires') return 'requires'
+        if (seg.key.startsWith('unlock_')) return 'unlocks'
+        if (idx.modByKey.has(seg.key)) return 'mods'
+        return null
+      }
+      if (type === 'decision') {
+        if (['decision_category', 'potential', 'allow'].includes(seg.key)) return seg.key
+        if (seg.key === 'option') return 'option'
+        return null
+      }
+      if (type === 'event') {
+        if (['type', 'trigger'].includes(seg.key)) return seg.key
+        if (seg.key === 'option') return 'option'
+        return null
+      }
+      if (type === 'privilege') {
+        if (['estate', 'potential', 'allow'].includes(seg.key)) return seg.key
+        if (seg.key === 'country_modifier') return 'mods'
+        return null
+      }
+      if (type === 'law') {
+        if (['law_category', 'potential', 'allow'].includes(seg.key)) return seg.key
+        if (seg.kind === 'block') return `policy:${seg.key}`
+        return null
+      }
+      return null
+    }
+
+    /** Apply the planned replacements to the original block text. */
+    function applyFields(type, text, fields, original, idx) {
+      const parsed = parseDefinition(text)
+      if (!parsed) return null
+      const texts = writeFields(type, fields, original, idx)
+      const indent = EDIT_INDENT
+
+      if (type === 'decision' && texts.option === '__EFFECT__') {
+        const option = parsed.segments.find((seg) => seg.type === 'entry' && seg.key === 'option')
+        const optionValue = option && option.kind === 'block' ? option.value : ''
+        const effectText = nz(fields.effect) ? asBlock('effect', fields.effect, indent) : ''
+        const inner = rebuildInner(optionValue, (seg) => (seg.type === 'entry' && seg.key === 'effect' ? 'effect' : null), { effect: effectText }, indent)
+        texts.option = `option = {${inner}}`
+      }
+
+      if (type === 'law') {
+        for (const [bucket, value] of Object.entries(texts)) {
+          if (!bucket.startsWith('policy:') || value !== bucket.slice(7)) continue
+          const policyId = bucket.slice(7)
+          const policy = parsed.segments.find((seg) => seg.type === 'entry' && seg.key === policyId)
+          const mods = (fields.policies || []).find((item) => item.id === policyId)
+          const before = (original.policies || []).find((item) => item.id === policyId)
+          const lines = renderModLines(mods ? mods.mods : [], before ? before.mods : [], idx)
+          const cm = lines.length ? asBlock('country_modifier', lines.join('\n'), indent) : ''
+          if (!policy) continue
+          const inner = rebuildInner(policy.value, (seg) => (seg.type === 'entry' && seg.key === 'country_modifier' ? 'mods' : null), { mods: cm }, indent)
+          texts[bucket] = `${policyId} = {${inner}}`
+        }
+      }
+
+      return rebuildParsed(parsed, (seg) => bucketOfType(type, seg, idx), texts, indent)
+    }
+
     function EditExisting({ t, type, sources, info, onSaved }) {
+      const { idx } = useForge()
       const [open, setOpen] = useState(false)
       const [entries, setEntries] = useState(null)
       const [loading, setLoading] = useState(false)
       const [q, setQ] = useState('')
-      const [selected, setSelected] = useState(null)
-      const [text, setText] = useState('')
+      const [entry, setEntry] = useState(null)
+      const [block, setBlock] = useState('')
+      const [fields, setFields] = useState(null)
+      const [original, setOriginal] = useState(null)
+      const [loc, setLoc] = useState([])
+      const [locOriginal, setLocOriginal] = useState({})
+      const [rawMode, setRawMode] = useState(false)
+      const [rawText, setRawText] = useState('')
+      const [rawDirty, setRawDirty] = useState(false)
       const [error, setError] = useState('')
       const [busy, setBusy] = useState(false)
       const [saved, setSaved] = useState('')
-      const [loc, setLoc] = useState([])
-      const [locOriginal, setLocOriginal] = useState({})
 
-      const editable = (entry) => {
-        const source = (info || [])[entry[3]]
+      const editable = (item) => {
+        const source = (info || [])[item[3]]
         return !!source && source.kind === 'mod' && source.ok
       }
+
+      // 切换内容类型时整体收起，避免带着上一条的内容继续编辑
+      useEffect(() => {
+        setOpen(false)
+        setEntries(null)
+        setEntry(null)
+        setBlock('')
+        setFields(null)
+        setOriginal(null)
+        setLoc([])
+        setLocOriginal({})
+        setRawMode(false)
+        setRawText('')
+        setRawDirty(false)
+        setSaved('')
+        setError('')
+      }, [type])
 
       const loadList = async () => {
         setLoading(true)
@@ -1362,39 +1710,67 @@ window.__ModuleLoader__.load({
         }
       }
 
-      useEffect(() => {
-        setEntries(null)
-        setSelected(null)
-        setText('')
-        setSaved('')
-        setLoc([])
-        setLocOriginal({})
-      }, [type])
-
       const toggle = () => {
         const next = !open
         setOpen(next)
         if (next && entries === null) loadList()
       }
 
-      const pick = async (entry) => {
+      const pick = async (item) => {
         setError('')
         setSaved('')
-        setSelected(entry)
-        setText('')
+        setEntry(item)
         setBusy(true)
         try {
           const res = await fetch('/pdx-forge/block', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ sources, path: entry[2], id: entry[0], type }),
+            body: JSON.stringify({ sources, path: item[2], id: item[0], type }),
           })
           const json = await res.json()
           if (!json.ok) throw new Error(json.error || String(res.status))
-          setText(json.text)
+          const parsed = readFields(type, json.text, idx)
+          setBlock(json.text)
+          setRawText(json.text)
+          setRawDirty(false)
+          setRawMode(!parsed)
+          setFields(parsed)
+          setOriginal(parsed ? JSON.parse(JSON.stringify(parsed)) : null)
           const found = json.loc || []
           setLoc(found)
           setLocOriginal(Object.fromEntries(found.map((row) => [row.key, row.text])))
+          if (!parsed) setError(t('edit.parseFail'))
+        } catch (err) {
+          setError(String(err && err.message ? err.message : err))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const set = (patch) => setFields((current) => ({ ...current, ...patch }))
+
+      const refineWithAi = async (key) => {
+        if (!entry) return
+        setBusy(true)
+        setError('')
+        try {
+          const res = await fetch('/pdx-forge/ai', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              type,
+              typeLabel: t('tab.' + type),
+              name: (loc.find((row) => row.key === entry[0]) || {}).text || entry[1],
+              desc: (loc.find((row) => row.key === entry[0] + '_desc') || {}).text || '',
+              tag: '',
+              fields: [key],
+              instruction: t('edit.aiInstruction'),
+              modifiers: (fields && fields.mods ? fields.mods : []).filter((m) => nz(m.key)).map((m) => `${m.key} = ${modValue(m, m.value, idx)}`),
+            }),
+          })
+          const json = await res.json()
+          if (!json.ok) throw new Error(json.error || 'AI')
+          if (json.fields && typeof json.fields[key] === 'string' && json.fields[key].trim()) set({ [key]: json.fields[key].trim() })
         } catch (err) {
           setError(String(err && err.message ? err.message : err))
         } finally {
@@ -1403,25 +1779,28 @@ window.__ModuleLoader__.load({
       }
 
       const save = async () => {
-        if (!selected) return
+        if (!entry) return
         setBusy(true)
         setSaved('')
         setError('')
         try {
-          const files = [{ path: selected[2], id: selected[0], mode: 'replace-block', text }]
-          const sourceRoot = ((info || [])[selected[3]] || {}).path || ''
-          const safeId = String(selected[0]).replace(/[^A-Za-z0-9_\-]/g, '_')
+          const text = rawDirty || !fields ? rawText : applyFields(type, block, fields, original, idx)
+          if (!text) throw new Error(t('edit.parseFail'))
+
+          const files = [{ path: entry[2], id: entry[0], mode: 'replace-block', text }]
+          const sourceRoot = ((info || [])[entry[3]] || {}).path || ''
+          const safeId = String(entry[0]).replace(/[^A-Za-z0-9_\-]/g, '_')
           const overridePath = sourceRoot
             ? `${sourceRoot.replace(/\\/g, '/')}/in_game/localization/simp_chinese/${safeId}_l_simp_chinese.yml`
             : ''
           const groups = new Map()
-          for (const entry of loc) {
-            const before = locOriginal[entry.key] == null ? '' : locOriginal[entry.key]
-            if (entry.text === before) continue
-            const target = entry.editable && entry.path ? entry.path : overridePath
+          for (const row of loc) {
+            const before = locOriginal[row.key] == null ? '' : locOriginal[row.key]
+            if (row.text === before) continue
+            const target = row.editable && row.path ? row.path : overridePath
             if (!target) continue
             const bucket = groups.get(target) || []
-            bucket.push({ key: entry.key, text: entry.text })
+            bucket.push({ key: row.key, text: row.text })
             groups.set(target, bucket)
           }
           for (const [target, rows] of groups) files.push({ path: target, mode: 'loc-upsert', entries: rows })
@@ -1434,8 +1813,13 @@ window.__ModuleLoader__.load({
           const json = await res.json()
           const failed = (json.files || []).filter((f) => !f.ok)
           if (!json.ok || failed.length) throw new Error(failed.map((f) => f.error).join('；') || json.error || t('edit.save'))
-          setSaved(t('edit.saved'))
+
+          setBlock(text)
+          setRawText(text)
+          setRawDirty(false)
+          if (fields) setOriginal(JSON.parse(JSON.stringify(fields)))
           setLocOriginal(Object.fromEntries(loc.map((row) => [row.key, row.text])))
+          setSaved(t('edit.saved'))
           if (onSaved) onSaved()
         } catch (err) {
           setError(String(err && err.message ? err.message : err))
@@ -1444,23 +1828,144 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const query = q.trim().toLowerCase()
-      const locLabel = (key) => {
-        const base = selected ? selected[0] : ''
-        if (!base) return key
-        if (key === base) return t('edit.locName')
-        if (key === base + '_desc') return t('edit.locDesc')
-        if (key === base + '.title') return t('edit.locTitle')
-        if (key === base + '.desc') return t('edit.locDesc')
-        if (key.startsWith(base + '.')) return `${t('edit.locOption')} ${key.slice(base.length + 1)}`
-        return key
+      const labelFor = (key) => {
+        const id = entry ? entry[0] : ''
+        if (!id) return key
+        const named = (base) => {
+          const hit = loc.find((row) => row.key === base)
+          return hit && hit.text ? hit.text : base
+        }
+        if (key === id) return t('edit.locName')
+        if (key === id + '_desc') return t('edit.locDesc')
+        if (key === id + '.title') return t('edit.locTitle')
+        if (key === id + '.desc') return t('edit.locDesc')
+        if (key.startsWith(id + '.')) return `${t('edit.locOption')} ${key.slice(id.length + 1)}`
+        if (key.endsWith('_CATEGORY')) return t('edit.locCategory')
+        if (key.endsWith('_desc')) return `${t('edit.locDesc')} · ${named(key.slice(0, -5))}`
+        return `${t('edit.locName')} · ${key}`
       }
-      const list = (entries || []).filter((entry) => {
-        if (!editable(entry)) return false
+
+      const query = q.trim().toLowerCase()
+      const list = (entries || []).filter((item) => {
+        if (!editable(item)) return false
         if (!query) return true
-        return entry[0].toLowerCase().includes(query) || (entry[1] || '').toLowerCase().includes(query)
+        return item[0].toLowerCase().includes(query) || (item[1] || '').toLowerCase().includes(query)
       })
       const visible = list.slice(0, 200)
+
+      const cell = (label, control, key) => e(
+        'div',
+        { className: 'pf-edit-cell', key: key || label },
+        e('span', { className: 'pf-edit-cell-label' }, label),
+        control,
+      )
+
+      const codeCell = (label, key, rows) => e(
+        'div',
+        { className: 'pf-edit-cell pf-edit-cell-wide', key },
+        e(
+          'div',
+          { className: 'pf-edit-cell-head' },
+          e('span', { className: 'pf-edit-cell-label' }, label),
+          e(Btn, { kind: 'ghost', onClick: () => refineWithAi(key), disabled: busy }, t('edit.ai')),
+        ),
+        e(TextArea, { value: fields[key], rows: rows || 4, mono: true, onChange: (value) => set({ [key]: value }) }),
+      )
+
+      const renderFields = () => {
+        if (!fields) return null
+        const meta = idx.data.meta
+        if (type === 'advance') {
+          return [
+            cell(t('f.age'), e(Select, { value: fields.age, onChange: (v) => set({ age: v }), options: meta.ages.map((a) => ({ value: a.id, label: a.label })) }), 'age'),
+            cell(t('f.icon'), e(TextInput, { value: fields.icon, mono: true, onChange: (v) => set({ icon: v }) }), 'icon'),
+            codeCell(t('f.potential'), 'potential'),
+            e(
+              'div',
+              { className: 'pf-edit-cell pf-edit-cell-wide', key: 'requires' },
+              e('span', { className: 'pf-edit-cell-label' }, t('f.requires')),
+              e(AdvancePicker, {
+                t,
+                selected: fields.requires || [],
+                onChange: (v) => set({ requires: v }),
+                custom: [],
+                onRecord: () => {},
+                recorded: false,
+              }),
+            ),
+            e(
+              'div',
+              { className: 'pf-edit-cell pf-edit-cell-wide', key: 'unlocks' },
+              e('span', { className: 'pf-edit-cell-label' }, t('sec.unlock')),
+              (fields.unlocks || []).length === 0 ? null : (fields.unlocks || []).map((row, i) => e(
+                'div',
+                { className: 'pf-row', key: i },
+                e(Select, {
+                  value: row.kind,
+                  onChange: (v) => set({ unlocks: fields.unlocks.map((x, k) => (k === i ? { ...x, kind: v } : x)) }),
+                  options: meta.unlockKinds.map((k) => ({ value: k.id, label: k.label })),
+                }),
+                e(TextInput, {
+                  value: row.target,
+                  mono: true,
+                  onChange: (v) => set({ unlocks: fields.unlocks.map((x, k) => (k === i ? { ...x, target: v } : x)) }),
+                }),
+                e(Btn, { kind: 'ghost', onClick: () => set({ unlocks: fields.unlocks.filter((_, k) => k !== i) }) }, '×'),
+              )),
+              e(Btn, { kind: 'ghost', onClick: () => set({ unlocks: (fields.unlocks || []).concat([{ kind: 'unlock_building', target: '' }]) }) }, t('u.add')),
+            ),
+            e(
+              'div',
+              { className: 'pf-edit-cell pf-edit-cell-wide', key: 'mods' },
+              e('span', { className: 'pf-edit-cell-label' }, t('sec.mods')),
+              e(ModEditor, { t, mods: fields.mods || [], onChange: (v) => set({ mods: v }) }),
+            ),
+          ]
+        }
+        if (type === 'decision') {
+          return [
+            cell(t('f.category'), e(Select, { value: fields.decision_category, onChange: (v) => set({ decision_category: v }), options: meta.decisionCategories.map((c) => ({ value: c.id, label: c.label })) }), 'cat'),
+            codeCell(t('f.potential'), 'potential', 3),
+            codeCell(t('f.allow'), 'allow', 3),
+            codeCell(t('f.effect'), 'effect', 5),
+          ]
+        }
+        if (type === 'event') {
+          return [
+            cell(t('f.eventType'), e(Select, { value: fields.type, onChange: (v) => set({ type: v }), options: meta.eventTypes.map((c) => ({ value: c.id, label: c.label })) }), 'type'),
+            codeCell(t('f.trigger'), 'trigger', 4),
+            codeCell(t('edit.optionBody'), 'option', 8),
+          ]
+        }
+        if (type === 'privilege') {
+          return [
+            cell(t('f.estate'), e(Select, { value: fields.estate, onChange: (v) => set({ estate: v }), options: meta.estates.map((s) => ({ value: s.id, label: s.label })) }), 'estate'),
+            codeCell(t('f.potential'), 'potential', 3),
+            codeCell(t('f.allow'), 'allow', 3),
+            e(
+              'div',
+              { className: 'pf-edit-cell pf-edit-cell-wide', key: 'mods' },
+              e('span', { className: 'pf-edit-cell-label' }, t('sec.mods')),
+              e(ModEditor, { t, mods: fields.mods || [], onChange: (v) => set({ mods: v }) }),
+            ),
+          ]
+        }
+        return [
+          cell(t('f.lawCategory'), e(Select, { value: fields.law_category, onChange: (v) => set({ law_category: v }), options: meta.lawCategories.map((c) => ({ value: c.id, label: c.label })) }), 'cat'),
+          codeCell(t('f.potential'), 'potential', 3),
+          codeCell(t('f.allow'), 'allow', 3),
+          ...(fields.policies || []).map((policy, index) => e(
+            'div',
+            { className: 'pf-edit-cell pf-edit-cell-wide', key: policy.id },
+            e('span', { className: 'pf-edit-cell-label' }, `${t('edit.policy')} · ${policy.id}`),
+            e(ModEditor, {
+              t,
+              mods: policy.mods || [],
+              onChange: (v) => set({ policies: fields.policies.map((item, k) => (k === index ? { ...item, mods: v } : item)) }),
+            }),
+          )),
+        ]
+      }
 
       return e(
         'div',
@@ -1477,47 +1982,68 @@ window.__ModuleLoader__.load({
               React.Fragment,
               null,
               e('p', { className: 'pf-hint' }, t('edit.hint')),
-              selected
+              entry
                 ? e(
                     React.Fragment,
                     null,
-                    e('div', { className: 'pf-edit-meta' },
-                      e('code', { className: 'pf-edit-id' }, selected[0]),
-                      e('span', { className: 'pf-edit-path', title: selected[2] }, selected[2])),
-                    e('textarea', {
-                      className: 'pf-area pf-mono pf-edit-text',
-                      value: text,
-                      rows: 18,
-                      spellCheck: false,
-                      onChange: (ev) => setText(ev.target.value),
-                    }),
+                    e(
+                      'div',
+                      { className: 'pf-edit-meta' },
+                      e('code', { className: 'pf-edit-id' }, entry[0]),
+                      e('span', { className: 'pf-edit-path', title: entry[2] }, entry[2]),
+                    ),
                     loc.length
                       ? e(
                           'div',
-                          { className: 'pf-loc' },
+                          { className: 'pf-edit-group' },
                           e('div', { className: 'pf-sec-h' }, t('edit.locSection')),
-                          loc.map((entry, index) =>
-                            e(
-                              'div',
-                              { className: 'pf-loc-row', key: entry.key },
-                              e('span', { className: 'pf-loc-label', title: entry.key }, locLabel(entry.key)),
-                              e(TextInput, {
-                                value: entry.text,
-                                onChange: (value) => setLoc(loc.map((row, i) => (i === index ? { ...row, text: value } : row))),
-                              }),
-                              e(Badge, { tone: entry.editable ? 'mod' : null }, entry.path
-                                ? (entry.editable ? t('edit.locMod') : t('edit.locOverride'))
-                                : t('edit.locNew')),
-                            ),
-                          ),
+                          loc.map((row, index) => e(
+                            'div',
+                            { className: 'pf-loc-row', key: row.key },
+                            e('span', { className: 'pf-loc-label', title: row.key }, labelFor(row.key)),
+                            e(TextInput, {
+                              value: row.text,
+                              onChange: (value) => setLoc(loc.map((item, k) => (k === index ? { ...item, text: value } : item))),
+                            }),
+                            e(Badge, { tone: row.editable ? 'mod' : null }, row.path
+                              ? (row.editable ? t('edit.locMod') : t('edit.locOverride'))
+                              : t('edit.locNew')),
+                          )),
                           e('span', { className: 'pf-hint' }, t('edit.locHint')),
+                        )
+                      : null,
+                    fields
+                      ? e(
+                          'div',
+                          { className: 'pf-edit-group' },
+                          e('div', { className: 'pf-sec-h' }, t('edit.data')),
+                          e('div', { className: 'pf-edit-grid' }, renderFields()),
                         )
                       : null,
                     e(
                       'div',
+                      { className: 'pf-edit-group' },
+                      e(
+                        'div',
+                        { className: 'pf-sec-h' },
+                        t('edit.advanced'),
+                        e('span', { className: 'pf-spacer' }),
+                        e(Btn, { kind: 'ghost', onClick: () => setRawMode(!rawMode) }, rawMode ? '▴' : '▾'),
+                      ),
+                      rawMode
+                        ? e(TextArea, {
+                            value: rawText,
+                            rows: 16,
+                            mono: true,
+                            onChange: (value) => { setRawText(value); setRawDirty(true) },
+                          })
+                        : null,
+                    ),
+                    e(
+                      'div',
                       { className: 'pf-row' },
-                      e(Btn, { kind: 'primary', onClick: save, disabled: busy || !text.trim() }, busy ? t('edit.saving') : t('edit.save')),
-                      e(Btn, { kind: 'ghost', onClick: () => { setSelected(null); setText(''); setSaved(''); setError('') } }, t('edit.cancel')),
+                      e(Btn, { kind: 'primary', onClick: save, disabled: busy }, busy ? t('edit.saving') : t('edit.save')),
+                      e(Btn, { kind: 'ghost', onClick: () => { setEntry(null); setFields(null); setOriginal(null); setLoc([]); setSaved(''); setError('') } }, t('edit.cancel')),
                       saved ? e('span', { className: 'pf-msg pf-msg-ok' }, saved) : null,
                       error ? e('span', { className: 'pf-msg pf-msg-bad' }, error) : null,
                     ),
@@ -1532,15 +2058,13 @@ window.__ModuleLoader__.load({
                       ? e(
                           'div',
                           { className: 'pf-results' },
-                          visible.map((entry) =>
-                            e(
-                              'button',
-                              { type: 'button', key: entry[3] + ':' + entry[0], className: 'pf-result', onClick: () => pick(entry) },
-                              e('span', { className: 'pf-res-name' }, entry[1] || entry[0]),
-                              e('code', { className: 'pf-res-key' }, entry[0]),
-                              e(Badge, { tone: 'mod' }, (info[entry[3]] || {}).label || 'MOD'),
-                            ),
-                          ),
+                          visible.map((item) => e(
+                            'button',
+                            { type: 'button', key: item[3] + ':' + item[0], className: 'pf-result', onClick: () => pick(item) },
+                            e('span', { className: 'pf-res-name' }, item[1] || item[0]),
+                            e('code', { className: 'pf-res-key' }, item[0]),
+                            e(Badge, { tone: 'mod' }, (info[item[3]] || {}).label || 'MOD'),
+                          )),
                         )
                       : null,
                     list.length > visible.length ? e('div', { className: 'pf-hint' }, t('m.count', { n: list.length, m: visible.length })) : null,
@@ -1895,6 +2419,7 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'pf-form' },
               e(EditExisting, {
+                key: state.type,
                 t,
                 type: state.type,
                 sources: activeSources,
@@ -2098,6 +2623,11 @@ window.__ModuleLoader__.load({
 .pf-edit-id{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--dsw-alias-label-primary);flex:0 0 auto}
 .pf-edit-path{font-size:10.5px;color:var(--dsw-alias-label-secondary);font-family:ui-monospace,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pf-edit-text{min-height:260px;line-height:1.5}
+.pf-edit-group{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:12px;margin-top:4px}
+.pf-edit-grid{display:flex;flex-direction:column;gap:10px}
+.pf-edit-cell{display:flex;flex-direction:column;gap:6px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:10px;background:var(--dsw-alias-bg-base)}
+.pf-edit-cell-label{font-size:11.5px;font-weight:600;color:var(--dsw-alias-label-secondary)}
+.pf-edit-cell-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .pf-loc{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:10px}
 .pf-loc-row{display:flex;align-items:center;gap:8px}
 .pf-loc-label{flex:0 0 92px;font-size:11.5px;font-weight:600;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2224,7 +2754,11 @@ window.__ModuleLoader__.load({
         )
       },
       // Exposed for tools/*.mjs only; nothing renders from here.
-      _test: { genAdvance, genDecision, genEvent, genPrivilege, genLaw, makeIndex, emptyForms, buildWritePayload, panel: ForgePanel, forms: FORMS },
+      _test: {
+        genAdvance, genDecision, genEvent, genPrivilege, genLaw, makeIndex, emptyForms, buildWritePayload,
+        parseDefinition, readFields, applyFields, writeFields,
+        panel: ForgePanel, forms: FORMS,
+      },
     }
   },
 })
